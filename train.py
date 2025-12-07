@@ -123,12 +123,18 @@ seq_len = 128
 tokenized_dataset_train = load_stackoverflow_dataset(max_len=seq_len, type='train')
 tokenized_dataset_valid = load_stackoverflow_dataset(max_len=seq_len, type='valid')
 
-# Freeze all layers except the classifier
-for param in model.bert.parameters():
+finetune_type = 'last layer'
+if finetune_type == 'last layer':
+  # Freeze all layers except the classifier
+  for param in model.bert.parameters():
     param.requires_grad = False
-
-# Keep only the classification head trainable
-for param in model.classifier.parameters():
+  # Keep only the classification head trainable
+  for param in model.classifier.parameters():
+    param.requires_grad = True
+elif finetune_type == 'all layers':
+  for param in model.bert.parameters():
+    param.requires_grad = True
+  for param in model.classifier.parameters():
     param.requires_grad = True
 
 print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
