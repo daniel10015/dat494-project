@@ -123,15 +123,15 @@ seq_len = 128
 tokenized_dataset_train = load_stackoverflow_dataset(max_len=seq_len, type='train')
 tokenized_dataset_valid = load_stackoverflow_dataset(max_len=seq_len, type='valid')
 
-finetune_type = 'last layer'
-if finetune_type == 'last layer':
+finetune_type = 'last_layer'
+if finetune_type == 'last_layer' or finetune_type == 'gradual_unfreeze':
   # Freeze all layers except the classifier
   for param in model.bert.parameters():
     param.requires_grad = False
   # Keep only the classification head trainable
   for param in model.classifier.parameters():
     param.requires_grad = True
-elif finetune_type == 'all layers':
+elif finetune_type == 'all_layers':
   for param in model.bert.parameters():
     param.requires_grad = True
   for param in model.classifier.parameters():
@@ -230,6 +230,6 @@ trainer = CustomTrainer(
 
 trainer.train()
 
-trainer.save_model(f"output/final-model-lastlayer-{seq_len}/")
+trainer.save_model(f"output/final-model-{finetune_type}-{seq_len}/")
 results = trainer.evaluate()
 print(results)
