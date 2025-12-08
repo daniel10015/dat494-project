@@ -69,7 +69,7 @@ cleaned_df_train = load_dataset(train_filename, cleaned_train_filename, 'train.c
 cleaned_df_valid = load_dataset(valid_filename, cleaned_valid_filename, 'valid.csv')
 
 import torch
-from transformers import BertTokenizer, BertForSequenceClassification, TrainingArguments, Trainer, DataCollatorWithPadding
+from transformers import BertTokenizer, BertForSequenceClassification, TrainingArguments, Trainer, DataCollatorWithPadding, EarlyStoppingCallback
 
 # Test GPU availability
 print(f"CUDA Available: {torch.cuda.is_available()}")
@@ -123,7 +123,7 @@ seq_len = 128
 tokenized_dataset_train = load_stackoverflow_dataset(max_len=seq_len, type='train')
 tokenized_dataset_valid = load_stackoverflow_dataset(max_len=seq_len, type='valid')
 
-finetune_type = 'last_layer'
+finetune_type = 'gradual_unfreeze'
 if finetune_type == 'last_layer' or finetune_type == 'gradual_unfreeze':
   # Freeze all layers except the classifier
   for param in model.bert.parameters():
@@ -139,19 +139,21 @@ elif finetune_type == 'all_layers':
 
 print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
+batch_size = 16
+logging_steps = 5
 training_args = TrainingArguments(
   output_dir = 'output/',
   eval_strategy='epoch',
   learning_rate=1e-4,
-  per_device_eval_batch_size=256, # batch size=256 is optimal for training speed on my device
-  per_device_train_batch_size=256,
+  per_device_eval_batch_size=batch_size, # batch size=256 is optimal for training speed on my device
+  per_device_train_batch_size=batch_size,
   num_train_epochs=2,
   weight_decay = 1e-2,
   save_strategy='epoch',
   save_total_limit=2,
   load_best_model_at_end=True,
   logging_dir='log/',
-  logging_steps=5,
+  logging_steps=logging_steps,
   label_smoothing_factor=0.1
 )
 
@@ -190,13 +192,30 @@ class CustomTrainer(Trainer):
   def __init__(self, *args, **kwargs):
       super().__init__(*args, **kwargs)
       self.i = 0
-      self.logging_steps = 5
+      self.logging_steps = logging_steps
+      # since there's 5626 samples over 2 epochs for batch_size=16
+      # and we want to eventually unfreeze about 150 over the course of this
+      # we will unfreeze one layer every 40 minibatches 
+      self.unfreeze_every = 40
+      self.current_layer = 198
 
   # need kwargs because now they pass in num_items_in_batch
   def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
       
       labels = inputs.get('labels')
       outputs = model(**inputs) # keyword 
+      # gradual unfreeze
+      if finetune_type == 'gradual_unfreeze':
+        if not return_outputs and self.i != 0 and self.i % self.unfreeze_every == 0 and self.current_layer >= 0: 
+          trainable_params = 0
+          for i, param in enumerate(model.bert.parameters()):
+            if i == self.current_layer:
+              param.requires_grad = True
+              print(f'unfroze layer {self.current_layer + 1}')
+              self.current_layer -= 1
+            if param.requires_grad:
+              trainable_params += param.numel()
+          print(f"Trainable BERT parameters: {trainable_params}")
 
       # compute accuracy
       if labels is not None and self.i != 0 and self.i % self.logging_steps == 0:
@@ -217,6 +236,14 @@ class CustomTrainer(Trainer):
 
 
 data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+EARLY_STOPPING = True
+
+if EARLY_STOPPING:
+    early_stopping_callback = EarlyStoppingCallback(
+      early_stopping_patience=3,  # Stop if no improvement for 3 epochs
+      early_stopping_threshold=0.001 # Minimum change to be considered improvement
+    )
 
 trainer = CustomTrainer(
   model=model,
